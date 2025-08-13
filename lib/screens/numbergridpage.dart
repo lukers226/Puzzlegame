@@ -3,6 +3,8 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:audioplayers/audioplayers.dart';
 
+// --- Data Models & Game Constants ---
+
 enum CellState { normal, selected, faded, error }
 
 class CellData {
@@ -38,11 +40,9 @@ const List<Color> puzzleColors = [
   Colors.tealAccent, Colors.cyan, Colors.blueAccent, Colors.purpleAccent,
   Colors.deepPurpleAccent, Colors.pinkAccent, Colors.amber, Colors.lime, Colors.lightGreen,
 ];
-final Color fadedCellOverlay = Colors
-    .transparent; // <-- No color overlay for faded (just transparent)
+final Color fadedCellOverlay = Colors.transparent;
 final Color selectedCellBorder = Colors.yellow;
-final Color errorCellOverlay =
-    Colors.redAccent.withOpacity(0.4); // Only error still overlays
+final Color errorCellOverlay = Colors.redAccent.withOpacity(0.4);
 
 const rewardImages = [
   'assets/images/rowclear.png',
@@ -53,6 +53,15 @@ const rewardAudios = [
   'audio/clear.mp3',
 ];
 
+const String initialRowsAudio = 'audio/levelup.mp3';
+const String cellSelectAudio = 'audio/itempick.mp3';
+const String pairSuccessAudio = 'audio/suc.mp3';
+const String pairFailAudio    = 'audio/error.mp3';
+const String stageClearAudio  = 'audio/levelwin.mp3';
+const String addRowAudio      = 'audio/splash.wav';
+
+// --- Main Game Page ---
+
 class NumberGridPage extends StatefulWidget {
   @override
   State<NumberGridPage> createState() => _NumberGridPageState();
@@ -62,26 +71,34 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
   final random = Random();
   late List<List<CellData>> grid;
   late int filledRows;
-  int score = 0, addRowCredits = 6, bulbCredits = 1, stageNumber = 1, allTimeScore = 256;
+  int score = 0, addRowCredits = 6, bulbCredits = 1, stageNumber = 1, allTimeScore = 0;
   Offset? shakeOffsetA, shakeOffsetB;
   AnimationController? shakeController;
   Animation<Offset>? shakeAnimation;
   Timer? errorFlashTimer;
   Point<int>? selectedCell;
 
-  int _rewardIndex = 0;
   bool _isRewardVisible = false;
   String? _rewardImage;
   final player = AudioPlayer();
   AnimationController? _rewardAnimCtrl;
-
-  // Animation for first 3 rows
   List<bool> _initialRowAnimated = [false, false, false];
+  bool _isStageClear = false;
+  AudioPlayer? _stageClearPlayer;
+  final List<int> _rowClearQueue = [];
+  bool _showingRowReward = false;
 
   @override
   void initState() {
     super.initState();
     _startGame();
+  }
+
+  Future<void> _playAudio(String path) async {
+    try {
+      await player.stop();
+      await player.play(AssetSource(path));
+    } catch (e) {}
   }
 
   List<List<CellData>> _generatePairedRowsWithOneLeft(int rows, int cols) {
@@ -92,9 +109,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     for (int i = 0; i < totalPairs; i++) {
       bool sum10 = random.nextBool();
       int a = minN + random.nextInt(maxN - minN + 1);
-      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN)
-          ? 10 - a
-          : a;
+      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN) ? 10 - a : a;
       pool.add(a);
       pool.add(b);
     }
@@ -120,9 +135,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     for (int i = 0; i < numPairs; i++) {
       bool sum10 = random.nextBool();
       int a = minN + random.nextInt(maxN - minN + 1);
-      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN)
-          ? 10 - a
-          : a;
+      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN) ? 10 - a : a;
       pool.add(a);
       pool.add(b);
     }
@@ -148,9 +161,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     for (int i = 0; i < nPairs; i++) {
       bool sum10 = random.nextBool();
       int a = minN + random.nextInt(maxN - minN + 1);
-      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN)
-          ? 10 - a
-          : a;
+      int b = (sum10 && 10 - a != a && 10 - a >= minN && 10 - a <= maxN) ? 10 - a : a;
       pool.add(a);
       pool.add(b);
     }
@@ -163,14 +174,10 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     return pool.take(cols).map((n) => CellData(number: n)).toList();
   }
 
-  void _startGame() {
-    grid = List.generate(
-        level.rows, (_) => List.generate(level.cols, (_) => CellData(number: null)));
-    List<List<CellData>> initialRows =
-        _generatePairedRowsWithOneLeft(level.startingRows, level.cols);
-    for (int i = 0; i < level.startingRows; i++) {
-      grid[i] = initialRows[i];
-    }
+  void _startGame() async {
+    grid = List.generate(level.rows, (_) => List.generate(level.cols, (_) => CellData(number: null)));
+    List<List<CellData>> initialRows = _generatePairedRowsWithOneLeft(level.startingRows, level.cols);
+    for (int i = 0; i < level.startingRows; i++) grid[i] = initialRows[i];
     filledRows = level.startingRows;
     score = 0;
     addRowCredits = 6;
@@ -178,28 +185,53 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     selectedCell = null;
     _stopErrorAnim();
     _hideRewardOverlay();
-
     _initialRowAnimated = [false, false, false];
+    _isStageClear = false;
+    _rowClearQueue.clear();
+    _showingRowReward = false;
     for (int i = 0; i < 3; i++) {
-      Future.delayed(Duration(milliseconds: 220 * i), () {
-        if (mounted) setState(() => _initialRowAnimated[i] = true);
+      Future.delayed(Duration(milliseconds: 220 * i), () async {
+        if (mounted) {
+          setState(() => _initialRowAnimated[i] = true);
+          if (i == 0) await _playAudio(initialRowsAudio);
+        }
       });
     }
     setState(() {});
   }
 
-  void _selectCell(int row, int col) {
+  void _checkStageClear() async {
+    if (_isStageClear) return;
+    bool allCleared = grid.expand((row) => row).every((c) => c.number == null || c.state == CellState.faded);
+    if (allCleared) {
+      setState(() => _isStageClear = true);
+      _stageClearPlayer = AudioPlayer();
+      try {
+        await _stageClearPlayer!.play(AssetSource(stageClearAudio));
+      } catch (e) {}
+    }
+  }
+
+  void _onCongratsTap() async {
+    if (_stageClearPlayer != null) await _stageClearPlayer!.stop();
+    Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => Stage2Page()));
+  }
+
+  void _selectCell(int row, int col) async {
     final cell = grid[row][col];
+    if (_isStageClear) return;
     if (cell.state == CellState.faded || cell.number == null) return;
     if (selectedCell == null) {
+      await _playAudio(cellSelectAudio);
       setState(() => selectedCell = Point(row, col));
-    } else {
-      if (selectedCell!.x == row && selectedCell!.y == col) {
-        setState(() => selectedCell = null);
-        return;
-      }
-      _tryMatch(selectedCell!.x, selectedCell!.y, row, col);
+      return;
     }
+    if (selectedCell!.x == row && selectedCell!.y == col) {
+      setState(() => selectedCell = null);
+      return;
+    }
+    await _playAudio(cellSelectAudio);
+    _tryMatch(selectedCell!.x, selectedCell!.y, row, col);
   }
 
   void _tryMatch(int r1, int c1, int r2, int c2) async {
@@ -208,6 +240,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     if (cell1.state == CellState.faded || cell2.state == CellState.faded) return;
     bool match = _checkMatch(cell1.number!, cell2.number!);
     if (match) {
+      await _playAudio(pairSuccessAudio);
       setState(() {
         grid[r1][c1].state = CellState.faded;
         grid[r2][c2].state = CellState.faded;
@@ -216,7 +249,9 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
       });
       await Future.delayed(Duration(milliseconds: 350));
       _checkRowBonus();
+      _checkStageClear();
     } else {
+      await _playAudio(pairFailAudio);
       _playShakeAnim(r1, c1, r2, c2);
       setState(() => selectedCell = null);
     }
@@ -224,48 +259,80 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
 
   bool _checkMatch(int a, int b) => (a == b) || (a + b == 10);
 
+  // --------- THE FINAL BULLETPROOF REWARD QUEUE, FIXES ALL DOUBLE-DISPOSE BUGS ---------
   void _checkRowBonus() {
     for (int r = 0; r < filledRows; r++) {
-      bool allFaded = grid[r].every((cell) => cell.number != null && cell.state == CellState.faded);
+      bool allCleared = grid[r].every((cell) => cell.state == CellState.faded || cell.number == null);
       bool alreadyGiven = grid[r].isNotEmpty && grid[r][0].rowBonusGiven;
-      if (allFaded && !alreadyGiven) {
+      if (allCleared && !alreadyGiven) {
         setState(() {
-          for (var cell in grid[r]) {
-            cell.rowBonusGiven = true;
-          }
+          for (var cell in grid[r]) cell.rowBonusGiven = true;
           score += 100;
         });
-        _showRewardOverlay();
+        _rowClearQueue.add(r);
+        _processRowRewardQueue();
+        _checkStageClear();
       }
     }
   }
 
-  void _showRewardOverlay() async {
-    if (_isRewardVisible) return;
-    _rewardImage = rewardImages[_rewardIndex % rewardImages.length];
-    String audio = rewardAudios[_rewardIndex % rewardAudios.length];
-    _rewardAnimCtrl?.dispose();
-    _rewardAnimCtrl =
-        AnimationController(duration: Duration(milliseconds: 900), vsync: this);
-    setState(() {
-      _isRewardVisible = true;
-    });
-    _rewardAnimCtrl!.forward();
-    _rewardIndex++;
-    await player.stop();
-    await player.play(AssetSource(audio));
-    Future.delayed(Duration(seconds: 3), () {
-      _hideRewardOverlay();
-    });
-  }
+  void _processRowRewardQueue() async {
+    if (!_showingRowReward && _rowClearQueue.isNotEmpty) {
+      _showingRowReward = true;
+      int row = _rowClearQueue.removeAt(0);
+      int idx = row % rewardImages.length;
+      String rewardImg = rewardImages[idx];
+      String rewardAudio = rewardAudios[idx];
 
-  void _hideRewardOverlay() {
-    if (_isRewardVisible) {
+      // Properly dispose of the previous controller (safe even if null/used)
+      if (_rewardAnimCtrl != null) {
+        try {
+          _rewardAnimCtrl!.dispose();
+        } catch (_) {}
+        _rewardAnimCtrl = null;
+      }
+      _rewardAnimCtrl = AnimationController(
+        duration: Duration(milliseconds: 900),
+        vsync: this,
+      );
+
+      setState(() {
+        _isRewardVisible = true;
+        _rewardImage = rewardImg;
+      });
+
+      _rewardAnimCtrl!.forward();
+      try {
+        await player.stop();
+      } catch (_) {}
+      await player.play(AssetSource(rewardAudio));
+
+      await Future.delayed(Duration(seconds: 2));
       setState(() {
         _isRewardVisible = false;
       });
-      player.stop();
-      _rewardAnimCtrl?.dispose();
+      if (_rewardAnimCtrl != null) {
+        try {
+          _rewardAnimCtrl!.dispose();
+        } catch (_) {}
+        _rewardAnimCtrl = null;
+      }
+      _showingRowReward = false;
+      // Immediately process any more overlays in queue (never skip)
+      _processRowRewardQueue();
+    }
+  }
+
+  void _hideRewardOverlay() {
+    setState(() {
+      _isRewardVisible = false;
+    });
+    player.stop();
+    if (_rewardAnimCtrl != null) {
+      try {
+        _rewardAnimCtrl!.dispose();
+      } catch (_) {}
+      _rewardAnimCtrl = null;
     }
   }
 
@@ -308,12 +375,13 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     errorFlashTimer?.cancel();
   }
 
-  void _addRowsToBottom() {
+  void _addRowsToBottom() async {
+    if (_isStageClear) return;
     if (addRowCredits <= 0) return;
     if (filledRows >= level.rows) return;
     int maxRowsAvail = level.rows - filledRows;
     int rowsToAdd = min(level.addRowsPerPress, maxRowsAvail);
-
+    await _playAudio(addRowAudio);
     List<int> remainingNumbers = [];
     for (int r = 0; r < filledRows; r++) {
       for (int c = 0; c < level.cols; c++) {
@@ -323,7 +391,6 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
         }
       }
     }
-
     for (int k = 0; k < rowsToAdd; k++) {
       if (remainingNumbers.length == 1) {
         grid[filledRows] =
@@ -335,9 +402,11 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     }
     addRowCredits--;
     setState(() {});
+    _checkStageClear();
   }
 
   void _bulbPressed() {
+    if (_isStageClear) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('Hint button pressed! Implement your hint logic here.',
@@ -353,29 +422,43 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
     player.dispose();
     shakeController?.dispose();
     errorFlashTimer?.cancel();
-    _rewardAnimCtrl?.dispose();
+    if (_rewardAnimCtrl != null) {
+      try {
+        _rewardAnimCtrl!.dispose();
+      } catch (_) {}
+      _rewardAnimCtrl = null;
+    }
+    _stageClearPlayer?.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final cellSize = (MediaQuery.of(context).size.width - 32) / level.cols;
+    final double buttonZoneHeight = 80;
+    final double gridMaxHeight = cellSize * level.rows;
+
     return Scaffold(
       backgroundColor: Colors.deepPurple[900],
       body: SafeArea(
         child: Stack(
           children: [
+            // MAIN GAME
             Container(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Colors.deepPurple[900]!, Colors.deepPurple[800]!, Colors.deepPurpleAccent, Colors.deepPurple[900]!],
+                  colors: [
+                    Colors.deepPurple[900]!,
+                    Colors.deepPurple[800]!,
+                    Colors.deepPurpleAccent,
+                    Colors.deepPurple[900]!
+                  ],
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                 ),
               ),
               child: Column(
                 children: [
-                  // ... header, scores, etc ...
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 0),
                     child: Row(
@@ -391,7 +474,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
                     ),
                   ),
                   Container(
-                    height: 44,
+                    height: 54,
                     child: IntrinsicHeight(
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -432,76 +515,90 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
                     ),
                   ),
                   Expanded(
-                    child: Container(
-                      alignment: Alignment.center,
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-                      child: AnimatedGrid(
-                        grid: grid,
-                        cols: level.cols,
-                        cellSize: cellSize,
-                        selectedCell: selectedCell,
-                        shakeOffsetA: shakeOffsetA,
-                        shakeOffsetB: shakeOffsetB,
-                        onTap: _selectCell,
-                        initialRowAnimated: _initialRowAnimated,
-                      ),
-                    ),
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Stack(
-                          clipBehavior: Clip.none,
+                    child: LayoutBuilder(
+                      builder: (context, constraints) {
+                        double availableHeight = constraints.maxHeight - buttonZoneHeight;
+                        if (availableHeight < 0) availableHeight = 0;
+                        double gridDisplayHeight = min(gridMaxHeight, availableHeight);
+                        return Column(
                           children: [
-                            FloatingActionButton(
-                              heroTag: 'addbtn',
-                              elevation: 0,
-                              backgroundColor: Colors.deepPurple[700],
-                              onPressed: addRowCredits > 0 ? _addRowsToBottom : null,
-                              child: Icon(Icons.add, color: Colors.white, size: 34),
-                            ),
-                            Positioned(
-                              right: -4,
-                              top: -4,
-                              child: CircleAvatar(
-                                radius: 13,
-                                backgroundColor: addRowCredits > 0 ? Colors.red : Colors.grey,
-                                child: Text('$addRowCredits', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                            Spacer(),
+                            Center(
+                              child: SizedBox(
+                                width: cellSize * level.cols,
+                                height: gridDisplayHeight,
+                                child: AnimatedGrid(
+                                  grid: grid,
+                                  cols: level.cols,
+                                  cellSize: cellSize,
+                                  selectedCell: selectedCell,
+                                  shakeOffsetA: shakeOffsetA,
+                                  shakeOffsetB: shakeOffsetB,
+                                  onTap: _selectCell,
+                                  initialRowAnimated: _initialRowAnimated,
+                                ),
                               ),
                             ),
-                          ],
-                        ),
-                        SizedBox(width: 38),
-                        Stack(
-                          clipBehavior: Clip.none,
-                          children: [
-                            FloatingActionButton(
-                              heroTag: 'bulbbtn',
-                              elevation: 0,
-                              backgroundColor: Colors.deepPurple[700],
-                              onPressed: bulbCredits > 0 ? _bulbPressed : null,
-                              child: Icon(Icons.lightbulb_outline, color: Colors.yellowAccent, size: 30),
-                            ),
-                            Positioned(
-                              right: -4,
-                              top: -4,
-                              child: CircleAvatar(
-                                radius: 13,
-                                backgroundColor: bulbCredits > 0 ? Colors.red : Colors.grey,
-                                child: Text('$bulbCredits', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                            Spacer(),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 56.0),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      FloatingActionButton(
+                                        heroTag: 'addbtn',
+                                        elevation: 0,
+                                        backgroundColor: Colors.deepPurple[700],
+                                        onPressed: addRowCredits > 0 ? _addRowsToBottom : null,
+                                        child: Icon(Icons.add, color: Colors.white, size: 34),
+                                      ),
+                                      Positioned(
+                                        right: -4,
+                                        top: -4,
+                                        child: CircleAvatar(
+                                          radius: 13,
+                                          backgroundColor: addRowCredits > 0 ? Colors.red : Colors.grey,
+                                          child: Text('$addRowCredits', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  SizedBox(width: 38),
+                                  Stack(
+                                    clipBehavior: Clip.none,
+                                    children: [
+                                      FloatingActionButton(
+                                        heroTag: 'bulbbtn',
+                                        elevation: 0,
+                                        backgroundColor: Colors.deepPurple[700],
+                                        onPressed: bulbCredits > 0 ? _bulbPressed : null,
+                                        child: Icon(Icons.lightbulb_outline, color: Colors.yellowAccent, size: 30),
+                                      ),
+                                      Positioned(
+                                        right: -4,
+                                        top: -4,
+                                        child: CircleAvatar(
+                                          radius: 13,
+                                          backgroundColor: bulbCredits > 0 ? Colors.red : Colors.grey,
+                                          child: Text('$bulbCredits', style: TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold)),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ],
                               ),
-                            ),
+                            )
                           ],
-                        ),
-                      ],
+                        );
+                      },
                     ),
                   ),
                 ],
               ),
             ),
-            // Reward overlay: Image only, no background!
             if (_isRewardVisible && _rewardImage != null && _rewardAnimCtrl != null)
               Center(
                 child: ScaleTransition(
@@ -514,6 +611,41 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
                   ),
                 ),
               ),
+            if (_isStageClear)
+              GestureDetector(
+                onTap: _onCongratsTap,
+                child: Container(
+                  color: Colors.black.withOpacity(0.7),
+                  child: Center(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Image.asset('assets/images/stage2.png',
+                          width: 280, height: 280, fit: BoxFit.contain,
+                        ),
+                        SizedBox(height: 18),
+                        Text(
+                          "Level Complete!",
+                          style: TextStyle(
+                              fontSize: 36, color: Colors.yellow, fontWeight: FontWeight.bold, shadows: [Shadow(color: Colors.black38, blurRadius: 4)]),
+                        ),
+                        SizedBox(height: 14),
+                        ElevatedButton(
+                          style: ElevatedButton.styleFrom(
+                              backgroundColor: Colors.orange,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              padding: EdgeInsets.symmetric(horizontal: 44, vertical: 18)
+                          ),
+                          onPressed: _onCongratsTap,
+                          child: Text("NEXT", style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 2, color: Colors.white)),
+                        ),
+                        SizedBox(height: 18),
+                        Text("Tap anywhere or NEXT to continue", style: TextStyle(color: Colors.white70, fontSize: 15)),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
       ),
@@ -521,6 +653,7 @@ class _NumberGridPageState extends State<NumberGridPage> with TickerProviderStat
   }
 }
 
+// --- AnimatedGrid and helpers, unchanged from your prior versions ---
 class AnimatedGrid extends StatelessWidget {
   final List<List<CellData>> grid;
   final int cols;
@@ -570,7 +703,6 @@ class AnimatedGrid extends StatelessWidget {
   Widget _buildCell(BuildContext context, int row, int col) {
     final cell = grid[row][col];
     bool isSelected = selectedCell?.x == row && selectedCell?.y == col && cell.state != CellState.faded;
-
     final colorIndex = cell.number == null
         ? 0
         : ((cell.number! - 1) % puzzleColors.length);
@@ -578,11 +710,9 @@ class AnimatedGrid extends StatelessWidget {
         ? puzzleColors[colorIndex]
         : Colors.black38;
     Color? overlay;
-    // Only show overlay for error, not for faded
     if (cell.state == CellState.faded)
       overlay = Colors.transparent;
     else if (cell.state == CellState.error) overlay = errorCellOverlay;
-
     if (row < 3) {
       return AnimatedScale(
         scale: initialRowAnimated[row] ? 1.0 : 0.0,
@@ -648,7 +778,6 @@ class GridLinesPainter extends CustomPainter {
   final int cols, rows;
   final double cellSize;
   GridLinesPainter(this.cols, this.rows, this.cellSize);
-
   @override
   void paint(Canvas canvas, Size size) {
     final Paint p = Paint()
@@ -669,7 +798,17 @@ class GridLinesPainter extends CustomPainter {
       );
     }
   }
-
   @override
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+}
+
+class Stage2Page extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Text("Stage 2!", style: TextStyle(fontSize: 32, color: Colors.deepPurple)),
+      ),
+    );
+  }
 }
