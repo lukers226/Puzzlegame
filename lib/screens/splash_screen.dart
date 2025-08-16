@@ -1,28 +1,53 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import '../blocs/splash/splash_bloc.dart';
-import '../blocs/splash/splash_event.dart';
-import '../blocs/splash/splash_state.dart';
-import '../widgets/splash_video_widget.dart';
-import 'home_screen.dart';
+import 'package:video_player/video_player.dart';
+import 'level_selector_screen.dart';
 
-class SplashScreen extends StatelessWidget {
+class SplashScreen extends StatefulWidget {
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen> {
+  late VideoPlayerController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = VideoPlayerController.asset('video/splash.mp4')
+      ..initialize().then((_) {
+        setState(() {});
+        _controller.play();
+        Future.delayed(Duration(seconds: 5), () {
+          _controller.pause();
+          Navigator.of(context).pushReplacement(
+            MaterialPageRoute(builder: (_) => LevelSelectorScreen())
+          );
+        });
+      });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return BlocProvider(
-      create: (_) => SplashBloc()..add(SplashStarted()),
-      child: BlocListener<SplashBloc, SplashState>(
-        listener: (context, state) {
-          if (state is SplashFinished) {
-            Navigator.of(context).pushReplacement(
-                MaterialPageRoute(builder: (_) => HomeScreen()));
-          }
-        },
-        child: Scaffold(
-          body: SplashVideoWidget(),
-          backgroundColor: Colors.black,
-        ),
-      ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: _controller.value.isInitialized
+          ? SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _controller.value.size.width,
+                  height: _controller.value.size.height,
+                  child: VideoPlayer(_controller),
+                ),
+              ),
+            )
+          : Container(),
     );
   }
 }
