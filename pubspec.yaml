@@ -29,7 +29,4 @@ flutter:
   uses-material-design: true
   assets:
     - assets/videos/splash.mp4
-    - assets/audio/tz.mp3
-    - assets/audio/
     - assets/images/
-    - assets/videos/game.mp4
